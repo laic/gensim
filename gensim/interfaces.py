@@ -109,7 +109,7 @@ class TransformedCorpus(CorpusABC):
         self.obj, self.corpus, self.chunksize = obj, corpus, chunksize
         for key, value in kwargs.items(): #add the new parameters like per_word_topics to base class object of LdaModel
             setattr(self.obj, key, value)
-        self.metadata = False
+        self.metadata = True 
 
     def __len__(self):
         return len(self.corpus)
