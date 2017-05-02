@@ -105,21 +105,45 @@ class CorpusABC(utils.SaveLoad):
 
 
 class TransformedCorpus(CorpusABC):
-    def __init__(self, obj, corpus, chunksize=None):
+    def __init__(self, obj, corpus, chunksize=None, metadata=True):
         self.obj, self.corpus, self.chunksize = obj, corpus, chunksize
-        self.metadata = False
+        self.metadata = metadata 
 
     def __len__(self):
         return len(self.corpus)
 
     def __iter__(self):
+        is_corpus_meta = utils.is_corpus_meta(self.corpus)
+        if hasattr(self.corpus, 'metadata'):
+                metadata=self.corpus.metadata
+        elif is_corpus_meta:
+                metadata=True
+        else:
+                metadata=False
+
+ 
         if self.chunksize:
             for chunk in utils.grouper(self.corpus, self.chunksize):
                 for transformed in self.obj.__getitem__(chunk, chunksize=None):
                     yield transformed
         else:
-            for doc in self.corpus:
-                yield self.obj[doc]
+	    if metadata:
+                for doc, meta in self.corpus:
+        #            print "doc:", doc
+        #            print "meta:", meta
+                    yield self.obj.__getitem__(doc), meta
+            else:
+	        for doc in self.corpus:
+		    yield self.obj[doc]
+
+    def __getitem__(self, docno):
+
+        if hasattr(self.corpus, '__getitem__'):
+		#print "getitem"
+	   	#print self.corpus[0] 
+           	return self.obj[self.corpus[docno]]
+        else:
+            	raise RuntimeError('Type {} does not support slicing.'.format(type(self.corpus)))
 #endclass TransformedCorpus
 
 
