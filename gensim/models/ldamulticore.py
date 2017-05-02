@@ -51,6 +51,8 @@ import logging
 
 from gensim import utils
 from gensim.models.ldamodel import LdaModel, LdaState
+
+import six
 from six.moves import queue, xrange
 from multiprocessing import Pool, Queue, cpu_count
 
@@ -78,7 +80,8 @@ class LdaMulticore(LdaModel):
     def __init__(self, corpus=None, num_topics=100, id2word=None, workers=None,
                  chunksize=2000, passes=1, batch=False, alpha='symmetric',
                  eta=None, decay=0.5, offset=1.0, eval_every=10, iterations=50,
-                 gamma_threshold=0.001):
+                 gamma_threshold=0.001, random_state=None, minimum_probability=0.01,
+                 minimum_phi_value=0.01, per_word_topics=False):
         """
         If given, start training from the iterable `corpus` straight away. If not given,
         the model is left untrained (presumably because you want to call `update()` manually).
@@ -122,6 +125,8 @@ class LdaMulticore(LdaModel):
 
         `decay` and `offset` parameters are the same as Kappa and Tau_0 in
         Hoffman et al, respectively.
+        
+        `random_state` can be a numpy.random.RandomState object or the seed for one
 
         Example:
 
@@ -133,15 +138,18 @@ class LdaMulticore(LdaModel):
         """
         self.workers = max(1, cpu_count() - 1) if workers is None else workers
         self.batch = batch
-        if alpha == 'auto':
+
+        if isinstance(alpha, six.string_types) and alpha == 'auto':
             raise NotImplementedError("auto-tuning alpha not implemented in multicore LDA; use plain LdaModel.")
+
         super(LdaMulticore, self).__init__(corpus=corpus, num_topics=num_topics,
             id2word=id2word, chunksize=chunksize, passes=passes, alpha=alpha, eta=eta,
             decay=decay, offset=offset, eval_every=eval_every, iterations=iterations,
-            gamma_threshold=gamma_threshold)
+            gamma_threshold=gamma_threshold, random_state=random_state, minimum_probability= minimum_probability,
+            minimum_phi_value=minimum_phi_value, per_word_topics=per_word_topics)
 
 
-    def update(self, corpus):
+    def update(self, corpus, chunks_as_numpy=False):
         """
         Train the model with new documents, by EM-iterating over `corpus` until
         the topics converge (or until the maximum number of allowed iterations
@@ -159,9 +167,6 @@ class LdaMulticore(LdaModel):
         converge for any `decay` in (0.5, 1.0>.
 
         """
-        # rho is the "speed" of updating, decelerating over time
-        rho = lambda: pow(self.offset + self.num_updates / self.chunksize, -self.decay)
-
         try:
             lencorpus = len(corpus)
         except:
@@ -195,6 +200,12 @@ class LdaMulticore(LdaModel):
         job_queue = Queue(maxsize=2 * self.workers)
         result_queue = Queue()
 
+        # rho is the "speed" of updating; TODO try other fncs
+        # pass_ + num_updates handles increasing the starting t for each pass,
+        # while allowing it to "reset" on the first pass of each update
+        def rho():
+            return pow(self.offset + pass_ + (self.num_updates / self.chunksize), -self.decay)
+
         logger.info("training LDA model using %i processes", self.workers)
         pool = Pool(self.workers, worker_e_step, (job_queue, result_queue,))
         for pass_ in xrange(self.passes):
@@ -213,12 +224,12 @@ class LdaMulticore(LdaModel):
                     queue_size[0] -= 1
                     merged_new = True
                 if (force and merged_new and queue_size[0] == 0) or (not self.batch and (other.numdocs >= updateafter)):
-                    self.do_mstep(rho(), other)
+                    self.do_mstep(rho(), other, pass_ > 0)
                     other.reset()
                     if self.eval_every is not None and ((force and queue_size[0] == 0) or (self.eval_every != 0 and (self.num_updates / updateafter) % self.eval_every == 0)):
                         self.log_perplexity(chunk, total_docs=lencorpus)
 
-            chunk_stream = utils.grouper(corpus, self.chunksize, as_numpy=True)
+            chunk_stream = utils.grouper(corpus, self.chunksize, as_numpy=chunks_as_numpy)
             for chunk_no, chunk in enumerate(chunk_stream):
                 reallen += len(chunk)  # keep track of how many documents we've processed so far
 

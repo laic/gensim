@@ -16,6 +16,7 @@ Example: python -m gensim.models.lsi_dispatcher
 
 from __future__ import with_statement
 import os, sys, logging, threading, time
+from six import iteritems, itervalues
 try:
     from Queue import Queue
 except ImportError:
@@ -56,7 +57,7 @@ class Dispatcher(object):
         self.workers = {}
         self.callback = None # a pyro proxy to this object (unknown at init time, but will be set later)
 
-
+    @Pyro4.expose
     def initialize(self, **model_params):
         """
         `model_params` are parameters used to initialize individual workers (gets
@@ -71,7 +72,7 @@ class Dispatcher(object):
         self.workers = {}
         with utils.getNS() as ns:
             self.callback = Pyro4.Proxy('PYRONAME:gensim.lsi_dispatcher') # = self
-            for name, uri in ns.list(prefix='gensim.lsi_worker').iteritems():
+            for name, uri in iteritems(ns.list(prefix='gensim.lsi_worker')):
                 try:
                     worker = Pyro4.Proxy(uri)
                     workerid = len(self.workers)
@@ -86,27 +87,27 @@ class Dispatcher(object):
         if not self.workers:
             raise RuntimeError('no workers found; run some lsi_worker scripts on your machines first!')
 
-
+    @Pyro4.expose
     def getworkers(self):
         """
         Return pyro URIs of all registered workers.
         """
-        return [worker._pyroUri for worker in self.workers.itervalues()]
+        return [worker._pyroUri for worker in itervalues(self.workers)]
 
-
+    @Pyro4.expose
     def getjob(self, worker_id):
         logger.info("worker #%i requesting a new job" % worker_id)
         job = self.jobs.get(block=True, timeout=1)
         logger.info("worker #%i got a new job (%i left)" % (worker_id, self.jobs.qsize()))
         return job
 
-
+    @Pyro4.expose
     def putjob(self, job):
         self._jobsreceived += 1
         self.jobs.put(job, block=True, timeout=HUGE_TIMEOUT)
         logger.info("added a new job (len(queue)=%i items)" % self.jobs.qsize())
 
-
+    @Pyro4.expose
     def getstate(self):
         """
         Merge projections from across all workers and return the final projection.
@@ -121,7 +122,7 @@ class Dispatcher(object):
         # but merging only takes place once, after all input data has been processed,
         # so the overall effect would be small... compared to the amount of coding :-)
         logger.info("merging states from %i workers" % len(self.workers))
-        workers = self.workers.items()
+        workers = list(self.workers.items())
         result = workers[0][1].getstate()
         for workerid, worker in workers[1:]:
             logger.info("pulling state from worker %s" % workerid)
@@ -129,18 +130,19 @@ class Dispatcher(object):
         logger.info("sending out merged projection")
         return result
 
-
+    @Pyro4.expose
     def reset(self):
         """
         Initialize all workers for a new decomposition.
         """
-        for workerid, worker in self.workers.iteritems():
+        for workerid, worker in iteritems(self.workers):
             logger.info("resetting worker %s" % workerid)
             worker.reset()
             worker.requestjob()
         self._jobsdone = 0
         self._jobsreceived = 0
 
+    @Pyro4.expose
     @Pyro4.oneway
     @utils.synchronous('lock_update')
     def jobdone(self, workerid):
@@ -167,7 +169,7 @@ class Dispatcher(object):
         """
         Terminate all registered workers and then the dispatcher.
         """
-        for workerid, worker in self.workers.iteritems():
+        for workerid, worker in iteritems(self.workers):
             logger.info("terminating worker %s" % workerid)
             worker.exit()
         logger.info("terminating dispatcher")

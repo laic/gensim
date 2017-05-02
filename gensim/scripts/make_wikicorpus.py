@@ -18,13 +18,14 @@ This actually creates three files:
 * `OUTPUT_PREFIX_bow.mm`: bag-of-words (word counts) representation, in
   Matrix Matrix format
 * `OUTPUT_PREFIX_tfidf.mm`: TF-IDF representation
+* `OUTPUT_PREFIX.tfidf_model`: TF-IDF model dump
 
 The output Matrix Market files can then be compressed (e.g., by bzip2) to save
 disk space; gensim's corpus iterators can work with compressed input, too.
 
 `VOCABULARY_SIZE` controls how many of the most frequent words to keep (after
 removing tokens that appear in more than 10%% of all documents). Defaults to
-50,000.
+100,000.
 
 If you have the `pattern` package installed, this script will use a fancy
 lemmatization to get a lemma of each token (instead of plain alphabetic
@@ -61,6 +62,10 @@ if __name__ == '__main__':
         print(globals()['__doc__'] % locals())
         sys.exit(1)
     inp, outp = sys.argv[1:3]
+
+    if not os.path.isdir(os.path.dirname(outp)):
+        raise SystemExit("Error: The output directory does not exist. Create the directory and try again.")
+
     if len(sys.argv) > 3:
         keep_words = int(sys.argv[3])
     else:
@@ -96,6 +101,7 @@ if __name__ == '__main__':
 
     # build tfidf, ~50min
     tfidf = TfidfModel(mm, id2word=dictionary, normalize=True)
+    tfidf.save(outp + '.tfidf_model')
 
     # save tfidf vectors in matrix market format
     # ~4h; result file is 15GB! bzip2'ed down to 4.5GB

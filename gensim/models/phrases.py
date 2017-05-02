@@ -18,10 +18,11 @@ For example, if your input stream (=an iterable, with each value a list of token
 
 you'd train the detector with:
 
->>> bigram = Phrases(sentence_stream)
+>>> phrases = Phrases(sentence_stream)
 
-and then transform any sentence (list of token strings) using the standard gensim syntax:
+and then create a performant Phraser object to transform any sentence (list of token strings) using the standard gensim syntax:
 
+>>> bigram = Phraser(phrases)
 >>> sent = [u'the', u'mayor', u'of', u'new', u'york', u'was', u'there']
 >>> print(bigram[sent])
 [u'the', u'mayor', u'of', u'new_york', u'was', u'there']
@@ -57,14 +58,42 @@ two tokens (e.g. `new_york_times`):
 
 """
 
+import sys
+import os
 import logging
+import warnings
 from collections import defaultdict
+import itertools as it
 
-from six import iteritems, string_types
+from six import iteritems, string_types, next
 
 from gensim import utils, interfaces
 
 logger = logging.getLogger(__name__)
+
+
+def _is_single(obj):
+    """
+    Check whether `obj` is a single document or an entire corpus.
+    Returns (is_single, new) 2-tuple, where `new` yields the same
+    sequence as `obj`.
+
+    `obj` is a single document if it is an iterable of strings.  It
+    is a corpus if it is an iterable of documents.
+    """
+    obj_iter = iter(obj)
+    try:
+        peek = next(obj_iter)
+        obj_iter = it.chain([peek], obj_iter)
+    except StopIteration:
+        # An empty object is a single document
+        return True, obj
+    if isinstance(peek, string_types):
+        # It's a document, return the iterator
+        return True, obj_iter
+    else:
+        # If the first item isn't a string, assume obj is a corpus
+        return False, obj_iter
 
 
 class Phrases(interfaces.TransformationABC):
@@ -77,7 +106,7 @@ class Phrases(interfaces.TransformationABC):
 
     """
     def __init__(self, sentences=None, min_count=5, threshold=10.0,
-            max_vocab_size=40000000, delimiter=b'_'):
+                 max_vocab_size=40000000, delimiter=b'_', progress_per=10000):
         """
         Initialize the model from an iterable of `sentences`. Each sentence must be
         a list of words (unicode strings) that will be used for training.
@@ -101,7 +130,8 @@ class Phrases(interfaces.TransformationABC):
         of 40M needs about 3.6GB of RAM; increase/decrease `max_vocab_size` depending
         on how much available memory you have.
 
-        `delimiter` is the glue character used to join collocation tokens.
+        `delimiter` is the glue character used to join collocation tokens, and
+        should be a byte string (e.g. b'_').
 
         """
         if min_count <= 0:
@@ -116,10 +146,10 @@ class Phrases(interfaces.TransformationABC):
         self.vocab = defaultdict(int)  # mapping between utf8 token => its count
         self.min_reduce = 1  # ignore any tokens with count smaller than this
         self.delimiter = delimiter
+        self.progress_per = progress_per
 
         if sentences is not None:
             self.add_vocab(sentences)
-
 
     def __str__(self):
         """Get short string representation of this phrase detector."""
@@ -127,9 +157,8 @@ class Phrases(interfaces.TransformationABC):
             self.__class__.__name__, len(self.vocab), self.min_count,
             self.threshold, self.max_vocab_size)
 
-
     @staticmethod
-    def learn_vocab(sentences, max_vocab_size, delimiter=b'_'):
+    def learn_vocab(sentences, max_vocab_size, delimiter=b'_', progress_per=10000):
         """Collect unigram/bigram counts from the `sentences` iterable."""
         sentence_no = -1
         total_words = 0
@@ -137,7 +166,7 @@ class Phrases(interfaces.TransformationABC):
         vocab = defaultdict(int)
         min_reduce = 1
         for sentence_no, sentence in enumerate(sentences):
-            if sentence_no % 10000 == 0:
+            if sentence_no % progress_per == 0:
                 logger.info("PROGRESS: at sentence #%i, processed %i words and %i word types" %
                             (sentence_no, total_words, len(vocab)))
             sentence = [utils.any2utf8(w) for w in sentence]
@@ -146,18 +175,17 @@ class Phrases(interfaces.TransformationABC):
                 vocab[delimiter.join(bigram)] += 1
                 total_words += 1
 
-            if sentence:    # add last word skipped by previous loop
+            if sentence:  # add last word skipped by previous loop
                 word = sentence[-1]
                 vocab[word] += 1
 
             if len(vocab) > max_vocab_size:
-                prune_vocab(vocab, min_reduce)
+                utils.prune_vocab(vocab, min_reduce)
                 min_reduce += 1
 
         logger.info("collected %i word types from a corpus of %i words (unigram + bigrams) and %i sentences" %
                     (len(vocab), total_words, sentence_no + 1))
         return min_reduce, vocab
-
 
     def add_vocab(self, sentences):
         """
@@ -169,18 +197,60 @@ class Phrases(interfaces.TransformationABC):
         # directly, but gives the new sentences a fighting chance to collect
         # sufficient counts, before being pruned out by the (large) accummulated
         # counts collected in previous learn_vocab runs.
-        min_reduce, vocab = self.learn_vocab(sentences, self.max_vocab_size, self.delimiter)
+        min_reduce, vocab = self.learn_vocab(sentences, self.max_vocab_size, self.delimiter, self.progress_per)
 
-        logger.info("merging %i counts into %s" % (len(vocab), self))
-        self.min_reduce = max(self.min_reduce, min_reduce)
-        for word, count in iteritems(vocab):
-            self.vocab[word] += count
-        if len(self.vocab) > self.max_vocab_size:
-            prune_vocab(self.vocab, self.min_reduce)
-            self.min_reduce += 1
+        if len(self.vocab) > 0:
+            logger.info("merging %i counts into %s", len(vocab), self)
+            self.min_reduce = max(self.min_reduce, min_reduce)
+            for word, count in iteritems(vocab):
+                self.vocab[word] += count
+            if len(self.vocab) > self.max_vocab_size:
+                utils.prune_vocab(self.vocab, self.min_reduce)
+                self.min_reduce += 1
+            logger.info("merged %s", self)
+        else:
+            # in common case, avoid doubling gigantic dict
+            logger.info("using %i counts as vocab in %s", len(vocab), self)
+            self.vocab = vocab
 
-        logger.info("merged %s" % self)
+    def export_phrases(self, sentences, out_delimiter=b' ', as_tuples=False):
+        """
+        Generate an iterator that contains all phrases in given 'sentences'
 
+        Example::
+
+          >>> sentences = Text8Corpus(path_to_corpus)
+          >>> bigram = Phrases(sentences, min_count=5, threshold=100)
+          >>> for phrase, score in bigram.export_phrases(sentences):
+          ...     print(u'{0}\t{1}'.format(phrase, score))
+
+            then you can debug the threshold with generated tsv
+        """
+        for sentence in sentences:
+            s = [utils.any2utf8(w) for w in sentence]
+            last_bigram = False
+            vocab = self.vocab
+            threshold = self.threshold
+            delimiter = self.delimiter  # delimiter used for lookup
+            min_count = self.min_count
+            for word_a, word_b in zip(s, s[1:]):
+                if word_a in vocab and word_b in vocab:
+                    bigram_word = delimiter.join((word_a, word_b))
+                    if bigram_word in vocab and not last_bigram:
+                        pa = float(vocab[word_a])
+                        pb = float(vocab[word_b])
+                        pab = float(vocab[bigram_word])
+                        score = (pab - min_count) / pa / pb * len(vocab)
+                        # logger.debug("score for %s: (pab=%s - min_count=%s) / pa=%s / pb=%s * vocab_size=%s = %s",
+                        #     bigram_word, pab, self.min_count, pa, pb, len(self.vocab), score)
+                        if score > threshold:
+                            if as_tuples:
+                                yield ((word_a, word_b), score)
+                            else:
+                                yield (out_delimiter.join((word_a, word_b)), score)
+                            last_bigram = True
+                            continue
+                        last_bigram = False
 
     def __getitem__(self, sentence):
         """
@@ -201,10 +271,9 @@ class Phrases(interfaces.TransformationABC):
             nonviolence leo_tolstoy
 
         """
-        try:
-            is_single = not sentence or isinstance(sentence[0], string_types)
-        except:
-            is_single = False
+        warnings.warn("For a faster implementation, use the gensim.models.phrases.Phraser class")
+
+        is_single, sentence = _is_single(sentence)
         if not is_single:
             # if the input is an entire corpus (rather than a single sentence),
             # return an iterable stream.
@@ -212,49 +281,118 @@ class Phrases(interfaces.TransformationABC):
 
         s, new_s = [utils.any2utf8(w) for w in sentence], []
         last_bigram = False
-        for bigram in zip(s, s[1:]):
-            if all(uni in self.vocab for uni in bigram):
-                bigram_word = self.delimiter.join(bigram)
-                if bigram_word in self.vocab and not last_bigram:
-                    pa = float(self.vocab[bigram[0]])
-                    pb = float(self.vocab[bigram[1]])
-                    pab = float(self.vocab[bigram_word])
-                    score = (pab - self.min_count) / pa / pb * len(self.vocab)
+        vocab = self.vocab
+        threshold = self.threshold
+        delimiter = self.delimiter
+        min_count = self.min_count
+        for word_a, word_b in zip(s, s[1:]):
+            if word_a in vocab and word_b in vocab:
+                bigram_word = delimiter.join((word_a, word_b))
+                if bigram_word in vocab and not last_bigram:
+                    pa = float(vocab[word_a])
+                    pb = float(vocab[word_b])
+                    pab = float(vocab[bigram_word])
+                    score = (pab - min_count) / pa / pb * len(vocab)
                     # logger.debug("score for %s: (pab=%s - min_count=%s) / pa=%s / pb=%s * vocab_size=%s = %s",
                     #     bigram_word, pab, self.min_count, pa, pb, len(self.vocab), score)
-                    if score > self.threshold:
+                    if score > threshold:
                         new_s.append(bigram_word)
                         last_bigram = True
                         continue
 
             if not last_bigram:
-                new_s.append(bigram[0])
+                new_s.append(word_a)
             last_bigram = False
 
         if s:  # add last word skipped by previous loop
             last_token = s[-1]
-            if last_token in self.vocab and not last_bigram:
+            if not last_bigram:
                 new_s.append(last_token)
 
         return [utils.to_unicode(w) for w in new_s]
 
 
-def prune_vocab(vocab, min_reduce):
+def pseudocorpus(source_vocab, sep):
+    """Feeds source_vocab's compound keys back to it, to discover phrases"""
+    for k in source_vocab:
+        if sep not in k:
+            continue
+        unigrams = k.split(sep)
+        for i in range(1, len(unigrams)):
+            yield [sep.join(unigrams[:i]), sep.join(unigrams[i:])]
+
+
+class Phraser(interfaces.TransformationABC):
     """
-    Remove all entries from the `vocab` dictionary with count smaller than `min_reduce`.
-    Modifies `vocab` in place.
+    Minimal state & functionality to apply results of a Phrases model to tokens.
+
+    After the one-time initialization, a Phraser will be much smaller and
+    somewhat faster than using the full Phrases model.
+
+    Reflects the results of the source model's `min_count` and `threshold`
+    settings. (You can tamper with those & create a new Phraser to try
+    other values.)
 
     """
-    old_len = len(vocab)
-    for w in list(vocab):  # make a copy of dict's keys
-        if vocab[w] <= min_reduce:
-            del vocab[w]
-    logger.info("pruned out %i tokens with count <=%i (before %i, after %i)" %
-        (old_len - len(vocab), min_reduce, old_len, len(vocab)))
+    def __init__(self, phrases_model):
+        self.threshold = phrases_model.threshold
+        self.min_count = phrases_model.min_count
+        self.delimiter = phrases_model.delimiter
+        self.phrasegrams = {}
+        corpus = pseudocorpus(phrases_model.vocab, phrases_model.delimiter)
+        logger.info('source_vocab length %i', len(phrases_model.vocab))
+        count = 0
+        for bigram, score in phrases_model.export_phrases(corpus, self.delimiter, as_tuples=True):
+            if bigram in self.phrasegrams:
+                logger.info('Phraser repeat %s', bigram)
+            self.phrasegrams[bigram] = (phrases_model.vocab[self.delimiter.join(bigram)], score)
+            count += 1
+            if not count % 50000:
+                logger.info('Phraser added %i phrasegrams', count)
+        logger.info('Phraser built with %i %i phrasegrams', count, len(self.phrasegrams))
+
+    def __getitem__(self, sentence):
+        """
+        Convert the input tokens `sentence` (=list of unicode strings) into phrase
+        tokens (=list of unicode strings, where detected phrases are joined by u'_'
+        (or other configured delimiter-character).
+
+        If `sentence` is an entire corpus (iterable of sentences rather than a single
+        sentence), return an iterable that converts each of the corpus' sentences
+        into phrases on the fly, one after another.
+
+        """
+        is_single, sentence = _is_single(sentence)
+        if not is_single:
+            # if the input is an entire corpus (rather than a single sentence),
+            # return an iterable stream.
+            return self._apply(sentence)
+
+        s, new_s = [utils.any2utf8(w) for w in sentence], []
+        last_bigram = False
+        phrasegrams = self.phrasegrams
+        delimiter = self.delimiter
+        for word_a, word_b in zip(s, s[1:]):
+            bigram_tuple = (word_a, word_b)
+            if phrasegrams.get(bigram_tuple, (-1, -1))[1] > self.threshold and not last_bigram:
+                bigram_word = delimiter.join((word_a, word_b))
+                new_s.append(bigram_word)
+                last_bigram = True
+                continue
+
+            if not last_bigram:
+                new_s.append(word_a)
+            last_bigram = False
+
+        if s:  # add last word skipped by previous loop
+            last_token = s[-1]
+            if not last_bigram:
+                new_s.append(last_token)
+
+        return [utils.to_unicode(w) for w in new_s]
 
 
 if __name__ == '__main__':
-    import sys, os
     logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
     logging.info("running %s" % " ".join(sys.argv))
 

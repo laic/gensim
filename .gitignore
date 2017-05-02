@@ -29,6 +29,7 @@
 *.pkl
 *.bak
 *.npy
+*.npz
 
 # OS generated files #
 ######################
@@ -44,8 +45,10 @@ Thumbs.db
 .ropeproject
 .settings/
 .eggs
+cython_debug
 docs/src/_build/
 docs/_static
+docs/notebooks/.ipynb_checkpoints
 dedan_gensim.tmproj
 gensim*.egg-info
 *,cover
@@ -64,3 +67,7 @@ data
 *.old
 *.model
 *~
+*_out.txt
+*.html
+*.inv
+*.js
