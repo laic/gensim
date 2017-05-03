@@ -52,16 +52,23 @@ class TextCorpus(interfaces.CorpusABC):
     implementation.
 
     """
-    def __init__(self, input=None):
+    def __init__(self, input=None, metadata=True, dictionary=None):
         super(TextCorpus, self).__init__()
         self.input = input
-        self.dictionary = Dictionary()
-        self.metadata = False
-        if input is not None:
-            self.dictionary.add_documents(self.get_texts())
+        self.metadata = metadata
+
+        if dictionary:
+                if type(dictionary) == str:
+                        self.dictionary = Dictionary.load(dictionary)
+                else:
+                        self.dictionary = dictionary
         else:
-            logger.warning("No input document stream provided; assuming "
-                           "dictionary will be initialized some other way.")
+                self.dictionary = Dictionary()
+                if input is not None:
+                    self.dictionary.add_documents(self.get_texts())
+                else:
+                    logger.warning("No input document stream provided; assuming "
+                                   "dictionary will be initialized some other way.")
 
     def __iter__(self):
         """
@@ -90,6 +97,7 @@ class TextCorpus(interfaces.CorpusABC):
         # Instead of raising NotImplementedError, let's provide a sample implementation:
         # assume documents are lines in a single file (one document per line).
         # Yield each document as a list of lowercase tokens, via `utils.tokenize`.
+        print("get_texts")
         with self.getstream() as lines:
             for lineno, line in enumerate(lines):
                 if self.metadata:

@@ -126,7 +126,17 @@ class LdaMallet(utils.SaveLoad, basemodel.BaseTopicModel):
 
           document id[SPACE]label (not used)[SPACE]whitespace delimited utf8-encoded tokens[NEWLINE]
         """
-        for docno, doc in enumerate(corpus):
+        if hasattr(corpus, 'metadata'):
+                metadata=corpus.metadata
+        else:
+                metadata=False
+
+        for docno, doc0 in enumerate(corpus):
+            if metadata:
+                doc, meta = doc0
+            else:
+                doc = doc0
+
             if self.id2word:
                 tokens = sum(([self.id2word[tokenid]] * int(cnt) for tokenid, cnt in doc), [])
             else:
@@ -182,7 +192,18 @@ class LdaMallet(utils.SaveLoad, basemodel.BaseTopicModel):
         logger.info("inferring topics with MALLET LDA '%s'", cmd)
         check_output(args=cmd, shell=True)
         result = list(self.read_doctopics(self.fdoctopics() + '.infer'))
-        return result if is_corpus else result[0]
+
+        if is_corpus:
+            is_corpus_meta = utils.is_corpus_meta(bow)
+            if is_corpus_meta:
+                corpusmeta = [ meta for doc, meta in bow ]
+                result = zip(result, corpusmeta)
+                return result
+            else:
+                return result
+
+        #return result if is_corpus else result[0]
+        return result[0]
 
     def load_word_topics(self):
         logger.info("loading assigned topics from %s", self.fstate())

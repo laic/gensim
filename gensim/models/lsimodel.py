@@ -354,6 +354,11 @@ class LsiModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
         if decay is None:
             decay = self.decay
 
+        if hasattr(corpus, 'metadata'):
+                metadata=corpus.metadata
+        else:
+                metadata=False
+
         if not scipy.sparse.issparse(corpus):
             if not self.onepass:
                 # we are allowed multiple passes over the input => use a faster, randomized two-pass algo
@@ -372,11 +377,16 @@ class LsiModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
                     self.dispatcher.reset()
                 for chunk_no, chunk in enumerate(utils.grouper(corpus, chunksize)):
                     logger.info("preparing a new chunk of documents")
-                    nnz = sum(len(doc) for doc in chunk)
+                    if metadata:
+                        logger.info("Stripping metadata for nnz calculation")
+                        nnz = sum(len(doc) for doc, meta in chunk)
+                    else:
+                        nnz = sum(len(doc) for doc in chunk)
+                    	#nnz = sum(len(doc) for doc in chunk)
                     # construct the job as a sparse matrix, to minimize memory overhead
                     # definitely avoid materializing it as a dense matrix!
                     logger.debug("converting corpus to csc format")
-                    job = matutils.corpus2csc(chunk, num_docs=len(chunk), num_terms=self.num_terms, num_nnz=nnz)
+                    job = matutils.corpus2csc(chunk, num_docs=len(chunk), num_terms=self.num_terms, num_nnz=nnz, metadata=metadata)
                     del chunk
                     doc_no += job.shape[1]
                     if self.dispatcher:
@@ -432,6 +442,10 @@ class LsiModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
             # up internal computations (one mat * mat multiplication, instead of
             # `chunksize` smaller mat * vec multiplications).
             return self._apply(bow, chunksize=chunksize)
+
+        is_corpus_meta = utils.is_corpus_meta(bow)
+        if is_corpus_meta:
+            return self._apply(bow, chunksize=None)
 
         if not is_corpus:
             bow = [bow]

@@ -112,7 +112,16 @@ class TfidfModel(interfaces.TransformationABC):
         logger.info("collecting document frequencies")
         dfs = {}
         numnnz, docno = 0, -1
-        for docno, bow in enumerate(corpus):
+
+        if hasattr(corpus, 'metadata'):
+                metadata = corpus.metadata
+
+        for docno, doc0 in enumerate(corpus):
+            if metadata:
+                bow, meta = doc0
+            else:
+                bow = doc0
+
             if docno % 10000 == 0:
                 logger.info("PROGRESS: processing document #%i" % docno)
             numnnz += len(bow)

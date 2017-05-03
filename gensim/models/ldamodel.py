@@ -383,7 +383,7 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
         self.state = None
         self.Elogbeta = None
 
-    def inference(self, chunk, collect_sstats=False):
+    def inference(self, chunk, collect_sstats=False, metadata=False):
         """
         Given a chunk of sparse document vectors, estimate gamma (parameters
         controlling the topic weights) for each document in the chunk.
@@ -423,6 +423,12 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
         # Inference code copied from Hoffman's `onlineldavb.py` (esp. the
         # Lee&Seung trick which speeds things up by an order of magnitude, compared
         # to Blei's original LDA-C code, cool!).
+        for d, doc0 in enumerate(chunk):
+            if metadata:
+                doc, meta = doc0
+            else:
+                doc = doc0
+
         for d, doc in enumerate(chunk):
             if len(doc) > 0 and not isinstance(doc[0][0], six.integer_types):
                 # make sure the term IDs are ints, otherwise np will get upset
@@ -473,7 +479,7 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
             sstats *= self.expElogbeta
         return gamma, sstats
 
-    def do_estep(self, chunk, state=None):
+    def do_estep(self, chunk, state=None, metadata=False):
         """
         Perform inference on a chunk of documents, and accumulate the collected
         sufficient statistics in `state` (or `self.state` if None).
@@ -481,7 +487,7 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
         """
         if state is None:
             state = self.state
-        gamma, sstats = self.inference(chunk, collect_sstats=True)
+        gamma, sstats = self.inference(chunk, collect_sstats=True, metadata=metadata)
         state.sstats += sstats
         state.numdocs += gamma.shape[0]  # avoids calling len(chunk) on a generator
         return gamma
@@ -511,7 +517,7 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
 
         return self.eta
 
-    def log_perplexity(self, chunk, total_docs=None):
+    def log_perplexity(self, chunk, total_docs=None, metadata=False):
         """
         Calculate and return per-word likelihood bound, using the `chunk` of
         documents as evaluation corpus. Also output the calculated statistics. incl.
@@ -520,9 +526,14 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
         """
         if total_docs is None:
             total_docs = len(chunk)
-        corpus_words = sum(cnt for document in chunk for _, cnt in document)
+
+        if metadata:
+                corpus_words = sum(cnt for document, meta in chunk for _, cnt in document)
+        else:
+                corpus_words = sum(cnt for document in chunk for _, cnt in document)
+
         subsample_ratio = 1.0 * total_docs / len(chunk)
-        perwordbound = self.bound(chunk, subsample_ratio=subsample_ratio) / (subsample_ratio * corpus_words)
+        perwordbound = self.bound(chunk, subsample_ratio=subsample_ratio, metadata=metadata) / (subsample_ratio * corpus_words)
         logger.info("%.3f per-word bound, %.1f perplexity estimate based on a held-out corpus of %i documents with %i words" %
                     (perwordbound, np.exp2(-perwordbound), len(chunk), corpus_words))
         return perwordbound
@@ -561,6 +572,12 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
         For other parameter settings, see :class:`LdaModel` constructor.
 
         """
+
+        if hasattr(corpus, 'metadata'):
+                metadata=corpus.metadata
+        else:
+                metadata=False
+
         # use parameters given in constructor, unless user explicitly overrode them
         if decay is None:
             decay = self.decay
@@ -633,7 +650,7 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
                 reallen += len(chunk)  # keep track of how many documents we've processed so far
 
                 if eval_every and ((reallen == lencorpus) or ((chunk_no + 1) % (eval_every * self.numworkers) == 0)):
-                    self.log_perplexity(chunk, total_docs=lencorpus)
+                    self.log_perplexity(chunk, total_docs=lencorpus, metadata=metadata)
 
                 if self.dispatcher:
                     # add the chunk to dispatcher's job queue, so workers can munch on it
@@ -644,7 +661,7 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
                 else:
                     logger.info('PROGRESS: pass %i, at document #%i/%i',
                                 pass_, chunk_no * chunksize + len(chunk), lencorpus)
-                    gammat = self.do_estep(chunk, other)
+                    gammat = self.do_estep(chunk, other, metadata=metadata)
 
                     if self.optimize_alpha:
                         self.update_alpha(gammat, rho())
@@ -707,7 +724,7 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
             # only update if this isn't an additional pass
             self.num_updates += other.numdocs
 
-    def bound(self, corpus, gamma=None, subsample_ratio=1.0):
+    def bound(self, corpus, gamma=None, subsample_ratio=1.0, metadata=False):
         """
         Estimate the variational bound of documents from `corpus`:
         E_q[log p(corpus)] - E_q[log q(corpus)]
@@ -721,7 +738,12 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
         _lambda = self.state.get_lambda()
         Elogbeta = dirichlet_expectation(_lambda)
 
-        for d, doc in enumerate(corpus):  # stream the input doc-by-doc, in case it's too large to fit in RAM
+        for d, doc0 in enumerate(corpus):  # stream the input doc-by-doc, in case it's too large to fit in RAM
+            if metadata:
+                doc, meta = doc0
+            else:
+                doc = doc0
+
             if d % self.chunksize == 0:
                 logger.debug("bound: at document #%i", d)
             if gamma is None:
@@ -912,6 +934,16 @@ class LdaModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
                 minimum_phi_value=minimum_phi_value
             )
             return self._apply(corpus, **kwargs)
+
+        is_corpus_meta = utils.is_corpus_meta(bow)
+        if is_corpus_meta:
+            kwargs = dict(
+                per_word_topics=per_word_topics,
+                minimum_probability=minimum_probability,
+                minimum_phi_value=minimum_phi_value
+            )
+            return self.apply(bow, **kwargs)
+
 
         gamma, phis = self.inference([bow], collect_sstats=per_word_topics)
         topic_dist = gamma[0] / sum(gamma[0])  # normalize distribution

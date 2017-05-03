@@ -108,7 +108,8 @@ class Dictionary(utils.SaveLoad, Mapping):
         >>> print(Dictionary(["máma mele maso".split(), "ema má máma".split()]))
         Dictionary(5 unique tokens)
         """
-        for docno, document in enumerate(documents):
+        for docno, (document, meta) in enumerate(documents):
+        #for docno, document in enumerate(documents):
             # log progress & run a regular check for pruning, once every 10k docs
             if docno % 10000 == 0:
                 if prune_at is not None and len(self) > prune_at:
@@ -143,7 +144,14 @@ class Dictionary(utils.SaveLoad, Mapping):
         # Construct (word, frequency) mapping.
         counter = defaultdict(int)
         for w in document:
-            counter[w if isinstance(w, unicode) else unicode(w, 'utf-8')] += 1
+            #counter[w if isinstance(w, unicode) else unicode(w, 'utf-8')] += 1
+            try:
+                counter[w if isinstance(w, unicode) else unicode(w, 'utf-8')] += 1
+            except TypeError as e:
+                print e
+                print w
+                #print document
+                raise SystemExit(1)
 
         token2id = self.token2id
         if allow_update or return_missing:

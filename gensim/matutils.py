@@ -68,7 +68,7 @@ def argsort(x, topn=None, reverse=False):
     return most_extreme.take(np.argsort(x.take(most_extreme)))  # resort topn into order
 
 
-def corpus2csc(corpus, num_terms=None, dtype=np.float64, num_docs=None, num_nnz=None, printprogress=0):
+def corpus2csc(corpus, num_terms=None, dtype=np.float64, num_docs=None, num_nnz=None, printprogress=0, metadata=False):
     """
     Convert a streamed corpus into a sparse matrix, in scipy.sparse.csc_matrix format,
     with documents as columns.
@@ -99,7 +99,14 @@ def corpus2csc(corpus, num_terms=None, dtype=np.float64, num_docs=None, num_nnz=
         posnow, indptr = 0, [0]
         indices = np.empty((num_nnz,), dtype=np.int32)  # HACK assume feature ids fit in 32bit integer
         data = np.empty((num_nnz,), dtype=dtype)
-        for docno, doc in enumerate(corpus):
+#        for docno, doc in enumerate(corpus):
+
+        for docno, doc0 in enumerate(corpus):
+            if metadata:
+                doc, meta  = doc0
+            else:
+                doc = doc0
+
             if printprogress and docno % printprogress == 0:
                 logger.info("PROGRESS: at document #%i/%i" % (docno, num_docs))
             posnext = posnow + len(doc)
@@ -641,6 +648,7 @@ class MmWriter(object):
         Note that the documents are processed one at a time, so the whole corpus
         is allowed to be larger than the available RAM.
         """
+        print "+++++ Write corpus"
         mw = MmWriter(fname)
 
         # write empty headers to the file (with enough space to be overwritten later)
@@ -651,16 +659,28 @@ class MmWriter(object):
         docno, poslast = -1, -1
         offsets = []
         if hasattr(corpus, 'metadata'):
-            orig_metadata = corpus.metadata
-            corpus.metadata = metadata
+            #orig_metadata = corpus.metadata
+            #corpus.metadata = metadata
             if metadata:
                 docno2metadata = {}
+        elif utils.is_corpus_meta(corpus):
+            metadata = True
+            docno2metadata = {}
         else:
             metadata = False
-        for docno, doc in enumerate(corpus):
+        
+
+	
+	for docno, doc in enumerate(corpus):
             if metadata:
-                bow, data = doc
-                docno2metadata[docno] = data
+                try:
+                    bow, data = doc
+                    docno2metadata[docno] = data
+                except TypeError as e:
+                    print "!!!!"
+                    print e
+                    print doc
+                    raise SystemExit(1)
             else:
                 bow = doc
             if docno % progress_cnt == 0:
@@ -671,12 +691,14 @@ class MmWriter(object):
                     offsets[-1] = -1
                 offsets.append(posnow)
                 poslast = posnow
+
             max_id, veclen = mw.write_vector(docno, bow)
             _num_terms = max(_num_terms, 1 + max_id)
             num_nnz += veclen
+
         if metadata:
             utils.pickle(docno2metadata, fname + '.metadata.cpickle')
-            corpus.metadata = orig_metadata
+#            corpus.metadata = orig_metadata
 
         num_docs = docno + 1
         num_terms = num_terms or _num_terms
