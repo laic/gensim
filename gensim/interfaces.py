@@ -109,20 +109,26 @@ class TransformedCorpus(CorpusABC):
         self.obj, self.corpus, self.chunksize = obj, corpus, chunksize
         for key, value in kwargs.items(): #add the new parameters like per_word_topics to base class object of LdaModel
             setattr(self.obj, key, value)
-            self.metadata = metadata 
+
+        if hasattr(self.corpus, 'metadata'):
+                self.metadata=self.corpus.metadata
+        #self.metadata = metadata 
 
     def __len__(self):
         return len(self.corpus)
 
     def __iter__(self):
         is_corpus_meta = utils.is_corpus_meta(self.corpus)
+	
         if hasattr(self.corpus, 'metadata'):
+		self.metadata=True
                 metadata=self.corpus.metadata
         elif is_corpus_meta:
+		self.metadata=True
                 metadata=True
         else:
+		self.metadata=False
                 metadata=False
-
  
         if self.chunksize:
             for chunk in utils.grouper(self.corpus, self.chunksize):
@@ -131,8 +137,6 @@ class TransformedCorpus(CorpusABC):
         else:
 	    if metadata:
                 for doc, meta in self.corpus:
-        #            print "doc:", doc
-        #            print "meta:", meta
                     yield self.obj.__getitem__(doc), meta
             else:
 	        for doc in self.corpus:

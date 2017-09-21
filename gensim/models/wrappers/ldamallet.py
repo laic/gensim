@@ -93,6 +93,8 @@ class LdaMallet(utils.SaveLoad, basemodel.BaseTopicModel):
             rand_prefix = hex(random.randint(0, 0xffffff))[2:] + '_'
             prefix = os.path.join(tempfile.gettempdir(), rand_prefix)
         self.prefix = prefix
+        self.infprefix = prefix + "_inf"
+	self.infer = False
         self.workers = workers
         self.optimize_interval = optimize_interval
         self.iterations = iterations
@@ -108,13 +110,19 @@ class LdaMallet(utils.SaveLoad, basemodel.BaseTopicModel):
     def fstate(self):
         return self.prefix + 'state.mallet.gz'
 
-    def fdoctopics(self):
+    def fdoctopics(self, infer=False):
+	if infer:
+        	return self.prefix + 'inf.doctopics.txt'
         return self.prefix + 'doctopics.txt'
 
-    def fcorpustxt(self):
+    def fcorpustxt(self, infer=False):
+	if infer:
+        	return self.prefix + 'inf.corpus.txt'
         return self.prefix + 'corpus.txt'
 
-    def fcorpusmallet(self):
+    def fcorpusmallet(self, infer=False):
+	if infer:
+        	return self.prefix + 'inf.corpus.mallet'
         return self.prefix + 'corpus.mallet'
 
     def fwordweights(self):
@@ -139,8 +147,10 @@ class LdaMallet(utils.SaveLoad, basemodel.BaseTopicModel):
 
             if self.id2word:
                 tokens = sum(([self.id2word[tokenid]] * int(cnt) for tokenid, cnt in doc), [])
+		#print "*", tokens
             else:
                 tokens = sum(([str(tokenid)] * int(cnt) for tokenid, cnt in doc), [])
+		#print "-", tokens
             file_like.write(utils.to_utf8("%s 0 %s\n" % (docno, ' '.join(tokens))))
 
     def convert_input(self, corpus, infer=False, serialize_corpus=True):
@@ -150,16 +160,20 @@ class LdaMallet(utils.SaveLoad, basemodel.BaseTopicModel):
 
         """
         if serialize_corpus:
-            logger.info("serializing temporary corpus to %s", self.fcorpustxt())
-            with smart_open(self.fcorpustxt(), 'wb') as fout:
+            logger.info("serializing temporary corpus to %s", self.fcorpustxt(infer=infer))
+            with smart_open(self.fcorpustxt(infer=infer), 'wb') as fout:
                 self.corpus2mallet(corpus, fout)
+
 
         # convert the text file above into MALLET's internal format
         cmd = self.mallet_path + ' import-file --preserve-case --keep-sequence --remove-stopwords --token-regex "\S+" --input %s --output %s'
         if infer:
             cmd += ' --use-pipe-from ' + self.fcorpusmallet()
-            cmd = cmd % (self.fcorpustxt(), self.fcorpusmallet() + '.infer')
+            cmd = cmd % (self.fcorpustxt(infer=infer), self.fcorpusmallet(infer=infer) + '.infer')
+	    logger.info("-------------- infer cmd ---------------")
+	    logger.info(cmd)
         else:
+	    logger.info("-------------- train cmd ---------------")
             cmd = cmd % (self.fcorpustxt(), self.fcorpusmallet())
         logger.info("converting temporary corpus to MALLET format with %s", cmd)
         check_output(args=cmd, shell=True)
@@ -188,10 +202,10 @@ class LdaMallet(utils.SaveLoad, basemodel.BaseTopicModel):
 
         self.convert_input(bow, infer=True)
         cmd = self.mallet_path + ' infer-topics --input %s --inferencer %s --output-doc-topics %s --num-iterations %s --doc-topics-threshold %s'
-        cmd = cmd % (self.fcorpusmallet() + '.infer', self.finferencer(), self.fdoctopics() + '.infer', iterations, self.topic_threshold)
+        cmd = cmd % (self.fcorpusmallet(infer=True) + '.infer', self.finferencer(), self.fdoctopics(infer=True) + '.infer', iterations, self.topic_threshold)
         logger.info("inferring topics with MALLET LDA '%s'", cmd)
         check_output(args=cmd, shell=True)
-        result = list(self.read_doctopics(self.fdoctopics() + '.infer'))
+        result = list(self.read_doctopics(self.fdoctopics(infer=True) + '.infer'))
 
         if is_corpus:
             is_corpus_meta = utils.is_corpus_meta(bow)

@@ -616,7 +616,7 @@ def is_corpus(obj):
 def is_corpus_meta(obj):
         for doc in obj:
                 #print "ITER:", type(doc), doc
-                if (type(doc) == tuple) or (type(doc) == numpy.ndarray):
+                if (type(doc) == tuple) or (type(doc) == np.ndarray):
                         if type(doc[0]) == list:
                                 # print "tuple with metainfo"
                                 return True

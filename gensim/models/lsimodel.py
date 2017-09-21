@@ -355,6 +355,7 @@ class LsiModel(interfaces.TransformationABC, basemodel.BaseTopicModel):
             decay = self.decay
 
         if hasattr(corpus, 'metadata'):
+		logger.info("LSI META")
                 metadata=corpus.metadata
         else:
                 metadata=False

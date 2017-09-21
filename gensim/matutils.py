@@ -110,7 +110,14 @@ def corpus2csc(corpus, num_terms=None, dtype=np.float64, num_docs=None, num_nnz=
             if printprogress and docno % printprogress == 0:
                 logger.info("PROGRESS: at document #%i/%i" % (docno, num_docs))
             posnext = posnow + len(doc)
-            indices[posnow: posnext] = [feature_id for feature_id, _ in doc]
+	    try:
+                indices[posnow: posnext] = [feature_id for feature_id, _ in doc]
+ 	    except ValueError as e:
+	        print e
+		print doc
+		print metadata
+		raise SystemExit
+
             data[posnow: posnext] = [feature_weight for _, feature_weight in doc]
             indptr.append(posnext)
             posnow = posnext
